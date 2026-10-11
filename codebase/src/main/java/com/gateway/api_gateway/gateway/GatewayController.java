@@ -4,6 +4,7 @@ import com.gateway.api_gateway.entity.RequestLog;
 import com.gateway.api_gateway.service.RequestLogService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -44,11 +45,14 @@ public class GatewayController {
     private final RouteCache routes;
     private final RateLimiter rateLimiter;
     private final RequestLogService requestLogService;
+    private final String clientIpHeader;
 
-    public GatewayController(RouteCache routes, RateLimiter rateLimiter, RequestLogService requestLogService) {
+    public GatewayController(RouteCache routes, RateLimiter rateLimiter, RequestLogService requestLogService,
+                             @Value("${app.client-ip-header:}") String clientIpHeader) {
         this.routes = routes;
         this.rateLimiter = rateLimiter;
         this.requestLogService = requestLogService;
+        this.clientIpHeader = clientIpHeader;
     }
 
     // {key} is the API's short name (/g/weatherhello/...) or, for older APIs, its number (/g/7/...).
@@ -67,9 +71,7 @@ public class GatewayController {
             return;
         }
 
-        // Real client IP. Behind Render/Railway's load balancer this is taken
-        // from X-Forwarded-For (see server.forward-headers-strategy).
-        String clientId = req.getRemoteAddr();
+        String clientId = clientIp(req);
 
         RateLimiter.Decision decision = rateLimiter.check(route, clientId);
         if (!decision.allowed()) {
@@ -127,6 +129,20 @@ public class GatewayController {
             for (String value : Collections.list(req.getHeaders(name))) b.header(name, value);
         }
         return b.build();
+    }
+
+    // Who is the client? Each client IP gets its own budget.
+    // On Render, traffic arrives through Cloudflare, so getRemoteAddr() is a
+    // Cloudflare edge server (it changes from request to request). Cloudflare
+    // puts the real client IP in the CF-Connecting-IP header and overwrites any
+    // value a client tries to send, so it can be trusted there. Locally there's
+    // no Cloudflare, so the header is not configured and the socket address is used.
+    private String clientIp(HttpServletRequest req) {
+        if (!clientIpHeader.isBlank()) {
+            String fromHeader = req.getHeader(clientIpHeader);
+            if (fromHeader != null && !fromHeader.isBlank()) return fromHeader.trim();
+        }
+        return req.getRemoteAddr();
     }
 
     private static long elapsedMs(long start, long excludeNanos) {

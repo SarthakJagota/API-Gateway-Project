@@ -18,21 +18,31 @@ public interface RequestLogRepository extends JpaRepository<RequestLog, Long> {
 
     // Full filtered view for one API: outcome, client identity (partial match)
     // and a date range are all optional - pass null for any filter you don't want.
+    // A missing date becomes "since 1970" / "until year 9999", because Postgres
+    // can't work out the type of a NULL timestamp parameter in "? IS NULL".
+    default Page<RequestLog> findFiltered(Long apiId, RequestLog.Outcome outcome, String clientIdentity,
+                                          Instant from, Instant to, Pageable pageable) {
+        return findFilteredInRange(apiId, outcome, clientIdentity,
+                from != null ? from : Instant.EPOCH,
+                to != null ? to : Instant.parse("9999-12-31T23:59:59Z"),
+                pageable);
+    }
+
     @Query("""
         SELECT r FROM RequestLog r
         WHERE r.apiId = :apiId
           AND (:outcome IS NULL OR r.outcome = :outcome)
           AND (:clientIdentity IS NULL OR r.clientIdentity LIKE %:clientIdentity%)
-          AND (:from IS NULL OR r.timestamp >= :from)
-          AND (:to IS NULL OR r.timestamp <= :to)
+          AND r.timestamp >= :from
+          AND r.timestamp <= :to
         ORDER BY r.timestamp DESC
         """)
-    Page<RequestLog> findFiltered(@Param("apiId") Long apiId,
-                                   @Param("outcome") RequestLog.Outcome outcome,
-                                   @Param("clientIdentity") String clientIdentity,
-                                   @Param("from") Instant from,
-                                   @Param("to") Instant to,
-                                   Pageable pageable);
+    Page<RequestLog> findFilteredInRange(@Param("apiId") Long apiId,
+                                         @Param("outcome") RequestLog.Outcome outcome,
+                                         @Param("clientIdentity") String clientIdentity,
+                                         @Param("from") Instant from,
+                                         @Param("to") Instant to,
+                                         Pageable pageable);
 
     // Dashboard log table across several of the user's APIs.
     Page<RequestLog> findByApiIdInOrderByTimestampDesc(Collection<Long> apiIds, Pageable pageable);

@@ -10,4 +10,6 @@ public interface RegisteredApiRepository extends JpaRepository<RegisteredApi, Lo
     List<RegisteredApi> findByOwner(User owner);
     // Person 1's gateway calls this on every request to resolve target + owner.
     Optional<RegisteredApi> findByGatewayApiKey(String gatewayApiKey);
+    Optional<RegisteredApi> findBySlug(String slug);
+    boolean existsBySlug(String slug);
 }

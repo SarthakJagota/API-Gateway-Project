@@ -47,12 +47,17 @@ public class ApiRegistrationService {
         // Proxy-abuse mitigation happens before anything is persisted.
         urlValidationService.validateOrThrow(request.targetUrl());
 
+        if (registeredApiRepository.existsBySlug(request.slug())) {
+            throw new IllegalArgumentException("The short name '" + request.slug() + "' is already taken");
+        }
+
         User owner = userRepository.findByEmail(ownerEmail)
             .orElseThrow(() -> new UsernameNotFoundException("User not found: " + ownerEmail));
 
         RegisteredApi api = new RegisteredApi();
         api.setOwner(owner);
         api.setName(request.name());
+        api.setSlug(request.slug());
         api.setTargetUrl(request.targetUrl());
         registeredApiRepository.save(api);
 
@@ -121,11 +126,14 @@ public class ApiRegistrationService {
 
     private RegisteredApiResponse toResponse(RegisteredApi api, Policy policy) {
         // Built from the incoming request, so it is right on localhost and on Render.
+        // Uses the short name if the API has one, otherwise its number.
+        Object pathKey = api.getSlug() != null ? api.getSlug() : api.getId();
         String gatewayUrl = ServletUriComponentsBuilder.fromCurrentContextPath()
-            .path("/g/{id}").buildAndExpand(api.getId()).toUriString();
+            .path("/g/{key}").buildAndExpand(pathKey).toUriString();
         return new RegisteredApiResponse(
             api.getId(),
             api.getName(),
+            api.getSlug(),
             api.getTargetUrl(),
             api.getGatewayApiKey(),
             gatewayUrl,

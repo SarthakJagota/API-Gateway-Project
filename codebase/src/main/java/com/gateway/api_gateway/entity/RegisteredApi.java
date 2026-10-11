@@ -22,6 +22,12 @@ public class RegisteredApi {
     @Column(nullable = false)
     private String name;
 
+    // Short, unique, URL-friendly name chosen by the owner, e.g. "weatherhello".
+    // Shows up in the gateway endpoint: /g/weatherhello/...
+    // Nullable so APIs registered before this feature still work (by number).
+    @Column(unique = true)
+    private String slug;
+
     // Validated on registration - see service/UrlValidationService.java
     // to block SSRF / internal-network targets (proxy-abuse mitigation).
     @Column(name = "target_url", nullable = false)
@@ -43,6 +49,8 @@ public class RegisteredApi {
     public void setOwner(User owner) { this.owner = owner; }
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
+    public String getSlug() { return slug; }
+    public void setSlug(String slug) { this.slug = slug; }
     public String getTargetUrl() { return targetUrl; }
     public void setTargetUrl(String targetUrl) { this.targetUrl = targetUrl; }
     public String getGatewayApiKey() { return gatewayApiKey; }

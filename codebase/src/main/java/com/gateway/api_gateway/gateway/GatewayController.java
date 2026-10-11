@@ -51,15 +51,17 @@ public class GatewayController {
         this.requestLogService = requestLogService;
     }
 
-    @RequestMapping("/g/{apiId}/**")
-    public void proxy(@PathVariable("apiId") long apiId, HttpServletRequest req, HttpServletResponse res) throws IOException {
+    // {key} is the API's short name (/g/weatherhello/...) or, for older APIs, its number (/g/7/...).
+    @RequestMapping("/g/{key}/**")
+    public void proxy(@PathVariable("key") String key, HttpServletRequest req, HttpServletResponse res) throws IOException {
         long start = System.nanoTime();
 
-        RouteCache.Route route = routes.get(apiId);
+        RouteCache.Route route = routes.resolve(key);
         if (route == null || !route.active()) {
             sendText(res, 404, "Unknown API");
             return;
         }
+        long apiId = route.apiId();
         if (!route.apiKey().equals(req.getHeader("X-API-Key"))) {
             sendText(res, 401, "Missing or wrong X-API-Key header");
             return;

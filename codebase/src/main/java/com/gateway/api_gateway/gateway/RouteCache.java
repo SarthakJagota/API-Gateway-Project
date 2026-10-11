@@ -3,6 +3,7 @@ package com.gateway.api_gateway.gateway;
 import com.gateway.api_gateway.entity.Policy;
 import com.gateway.api_gateway.entity.RegisteredApi;
 import com.gateway.api_gateway.repository.PolicyRepository;
+import com.gateway.api_gateway.repository.RegisteredApiRepository;
 import com.gateway.api_gateway.service.UrlValidationService;
 import org.springframework.stereotype.Service;
 
@@ -24,12 +25,31 @@ public class RouteCache {
     private static final long TTL_MS = 30_000;
 
     private final Map<Long, Entry> cache = new ConcurrentHashMap<>();
+    // Short names never change, so slug -> id can be cached forever.
+    private final Map<String, Long> slugToId = new ConcurrentHashMap<>();
     private final PolicyRepository policyRepository;
+    private final RegisteredApiRepository registeredApiRepository;
     private final UrlValidationService urlValidationService;
 
-    public RouteCache(PolicyRepository policyRepository, UrlValidationService urlValidationService) {
+    public RouteCache(PolicyRepository policyRepository, RegisteredApiRepository registeredApiRepository,
+                      UrlValidationService urlValidationService) {
         this.policyRepository = policyRepository;
+        this.registeredApiRepository = registeredApiRepository;
         this.urlValidationService = urlValidationService;
+    }
+
+    /** Resolves the part after /g/ - either a short name ("weatherhello") or a number ("7"). */
+    public Route resolve(String key) {
+        if (key.matches("\\d{1,18}")) {
+            return get(Long.parseLong(key));
+        }
+        Long id = slugToId.get(key);
+        if (id == null) {
+            id = registeredApiRepository.findBySlug(key).map(RegisteredApi::getId).orElse(null);
+            if (id == null) return null;
+            slugToId.put(key, id);
+        }
+        return get(id);
     }
 
     /** @return the route, or null if no such API (or its target is no longer allowed). */

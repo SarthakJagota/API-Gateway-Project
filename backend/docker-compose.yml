@@ -1,0 +1,39 @@
+# Whole system in one command:   docker compose up --build
+#   -> dashboard + gateway on http://localhost:8080
+# Only Postgres + Redis (when running the app from your IDE / mvnw):
+#   docker compose up -d postgres redis
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: apigateway
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]   # data survives restarts
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      retries: 20
+
+  redis:
+    image: redis:7
+    
+
+  app:
+    build: .
+    ports: ["8080:8080"]
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/apigateway
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: local_docker_secret_change_me_32_bytes_min
+    depends_on:
+      postgres:
+        condition: service_healthy   # wait until Postgres accepts connections
+      redis:
+        condition: service_started
+
+volumes:
+  pgdata:

@@ -46,6 +46,7 @@ public class RegisteredApi {
     public String getTargetUrl() { return targetUrl; }
     public void setTargetUrl(String targetUrl) { this.targetUrl = targetUrl; }
     public String getGatewayApiKey() { return gatewayApiKey; }
+    public void rotateKey() { this.gatewayApiKey = UUID.randomUUID().toString(); }
     public boolean isActive() { return active; }
     public void setActive(boolean active) { this.active = active; }
     public Instant getCreatedAt() { return createdAt; }

@@ -2,19 +2,16 @@ package com.gateway.api_gateway.service;
 
 import org.springframework.stereotype.Service;
 
+import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.UnknownHostException;
 
-// Direct implementation of the proposal's "Proxy abuse" risk mitigation:
-// "permit forwarding only to targets registered by an authenticated owner,
-// and validate target URLs on registration."
-//
-// This blocks the classic SSRF trick of registering a "target API" that's
-// actually localhost, a private-network address, or a cloud metadata
-// endpoint, which would turn the gateway into an open proxy into internal
-// infrastructure.
+// Proxy-abuse mitigation from the proposal: only forward to public targets.
+// Blocks the SSRF trick of registering a "target API" that's really
+// localhost, a private-network address, or a cloud metadata endpoint.
+// Called at registration AND whenever the gateway reloads a route.
 @Service
 public class UrlValidationService {
 
@@ -35,26 +32,28 @@ public class UrlValidationService {
             throw new IllegalArgumentException("Target URL must include a host");
         }
 
-        InetAddress resolved;
+        InetAddress[] addresses;
         try {
-            resolved = InetAddress.getByName(host);
+            addresses = InetAddress.getAllByName(host); // check EVERY address, not just the first
         } catch (UnknownHostException e) {
             throw new IllegalArgumentException("Could not resolve target host: " + host);
         }
 
-        if (resolved.isLoopbackAddress()
-                || resolved.isLinkLocalAddress()
-                || resolved.isSiteLocalAddress()   // covers RFC1918 private ranges
-                || resolved.isAnyLocalAddress()
-                || resolved.isMulticastAddress()) {
-            throw new IllegalArgumentException(
-                "Target URL resolves to a non-public address and cannot be registered");
+        for (InetAddress a : addresses) {
+            if (isPrivate(a)) {
+                throw new IllegalArgumentException(
+                    "Target URL resolves to a non-public address and cannot be registered");
+            }
         }
+    }
 
-        // Explicitly block the common cloud metadata IP as an extra guard,
-        // since it isn't always caught by the private-range checks above.
-        if (resolved.getHostAddress().equals("169.254.169.254")) {
-            throw new IllegalArgumentException("Target URL resolves to a metadata endpoint and cannot be registered");
-        }
+    private static boolean isPrivate(InetAddress a) {
+        return a.isLoopbackAddress()      // 127.0.0.0/8, ::1
+            || a.isLinkLocalAddress()     // 169.254.0.0/16 incl. cloud metadata 169.254.169.254
+            || a.isSiteLocalAddress()     // 10/8, 172.16/12, 192.168/16
+            || a.isAnyLocalAddress()      // 0.0.0.0
+            || a.isMulticastAddress()
+            // IPv6 private range fc00::/7 (Java's checks miss it; AWS IPv6 metadata lives here)
+            || (a instanceof Inet6Address && (a.getAddress()[0] & 0xFE) == 0xFC);
     }
 }

@@ -77,7 +77,7 @@ class LogCompletenessIntegrationTest {
             RequestLog.Outcome outcome = (i % 5 == 0) ? RequestLog.Outcome.BLOCKED : RequestLog.Outcome.ALLOWED;
             driver.submit(() -> {
                 try {
-                    requestLogService.logAsync(apiId, clientId, outcome, 12L);
+                    requestLogService.logAsync(apiId, clientId, outcome, outcome == RequestLog.Outcome.BLOCKED ? 429 : 200, 12L);
                 } finally {
                     latch.countDown();
                 }
@@ -88,22 +88,27 @@ class LogCompletenessIntegrationTest {
         // time to actually flush writes to Postgres before measuring.
         assertTrue(latch.await(30, TimeUnit.SECONDS), "Driver did not finish submitting in time");
         driver.shutdown();
-        Thread.sleep(3000); // async flush window
-
-        Instant windowEnd = Instant.now();
-        CompletenessResponse result = logCompletenessService.measure(apiId, requestCount, windowStart, windowEnd);
+        // Wait for the @Async pool to flush: poll until every row is in, or
+        // give up after 20 s (a fixed sleep is either too slow or flaky).
+        CompletenessResponse result;
+        long deadline = System.currentTimeMillis() + 20_000;
+        do {
+            Thread.sleep(200);
+            result = logCompletenessService.measure(apiId, requestCount, windowStart, Instant.now());
+        } while (result.actualCount() < requestCount && System.currentTimeMillis() < deadline);
+        final CompletenessResponse r = result;
 
         System.out.printf(
             "Log completeness: expected=%d actual=%d ratio=%.4f meetsTarget=%b%n",
-            result.expectedCount(), result.actualCount(), result.completenessRatio(), result.meetsTarget()
+            r.expectedCount(), r.actualCount(), r.completenessRatio(), r.meetsTarget()
         );
 
         assertTrue(
-            result.completenessRatio() >= LogCompletenessService.TARGET_RATIO,
+            r.completenessRatio() >= LogCompletenessService.TARGET_RATIO,
             () -> String.format(
                 "Completeness %.4f fell below the %.3f target (%d/%d rows written)",
-                result.completenessRatio(), LogCompletenessService.TARGET_RATIO,
-                result.actualCount(), result.expectedCount()
+                r.completenessRatio(), LogCompletenessService.TARGET_RATIO,
+                r.actualCount(), r.expectedCount()
             )
         );
     }

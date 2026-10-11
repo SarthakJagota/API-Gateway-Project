@@ -4,8 +4,7 @@ import com.gateway.api_gateway.entity.RequestLog;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
-import org.springframework.boot.test.autoconfigure.orm.jpa.AutoConfigureTestDatabase;
+import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -22,8 +21,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 // Covers the filtering gap called out for the dashboard logs endpoint:
 // outcome filter, client-identity filter, and date-range filter, each
 // checked independently against a real Postgres instance.
-@DataJpaTest
-@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
+// @SpringBootTest instead of @DataJpaTest: in Spring Boot 4 the JPA test
+// slice lives in a separate starter, and this keeps the dependencies simple.
+@SpringBootTest
 @Testcontainers
 class RequestLogRepositoryFilterTest {
 

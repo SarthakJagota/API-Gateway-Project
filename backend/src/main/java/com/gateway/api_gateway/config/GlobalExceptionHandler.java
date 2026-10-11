@@ -7,19 +7,21 @@ import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.server.ResponseStatusException;
 
-import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.stream.Collectors;
 
+// Every error comes back as {"error": "..."} so the dashboard can show it.
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<Map<String, String>> handleValidation(MethodArgumentNotValidException ex) {
-        Map<String, String> errors = new LinkedHashMap<>();
-        ex.getBindingResult().getFieldErrors().forEach(fe ->
-            errors.put(fe.getField(), fe.getDefaultMessage()));
-        return ResponseEntity.badRequest().body(errors);
+        String msg = ex.getBindingResult().getFieldErrors().stream()
+            .map(fe -> fe.getField() + ": " + fe.getDefaultMessage())
+            .collect(Collectors.joining(", "));
+        return ResponseEntity.badRequest().body(Map.of("error", msg));
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
@@ -35,5 +37,11 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(UsernameNotFoundException.class)
     public ResponseEntity<Map<String, String>> handleNotFound(UsernameNotFoundException ex) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<Map<String, String>> handleStatus(ResponseStatusException ex) {
+        String reason = ex.getReason() != null ? ex.getReason() : ex.getStatusCode().toString();
+        return ResponseEntity.status(ex.getStatusCode()).body(Map.of("error", reason));
     }
 }

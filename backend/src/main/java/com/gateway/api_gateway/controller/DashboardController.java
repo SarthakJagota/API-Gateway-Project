@@ -1,94 +1,121 @@
 package com.gateway.api_gateway.controller;
 
-import com.gateway.api_gateway.dto.DashboardDtos.CompletenessResponse;
-import com.gateway.api_gateway.dto.DashboardDtos.LogEntryResponse;
-import com.gateway.api_gateway.dto.DashboardDtos.SummaryResponse;
+import com.gateway.api_gateway.dto.DashboardDtos.*;
+import com.gateway.api_gateway.entity.RegisteredApi;
 import com.gateway.api_gateway.entity.RequestLog;
 import com.gateway.api_gateway.repository.RequestLogRepository;
+import com.gateway.api_gateway.service.ApiRegistrationService;
 import com.gateway.api_gateway.service.LogCompletenessService;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.format.annotation.DateTimeFormat;
-import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.*;
 
-// Everything Person 3's React dashboard calls. Deliberately returns
-// pre-aggregated summaries and paginated slices, never the full log table,
-// per the proposal's "server-side aggregation rather than shipping raw logs
-// to the browser" constraint.
+// Everything the dashboard reads. Every endpoint only ever looks at the
+// logged-in user's own APIs. Returns pre-aggregated numbers and paginated
+// slices, never the whole log table.
 @RestController
-@RequestMapping("/api/dashboard")
+@RequestMapping("/api")
 public class DashboardController {
 
-    private final RequestLogRepository requestLogRepository;
+    private final RequestLogRepository logs;
+    private final ApiRegistrationService apis;
     private final LogCompletenessService logCompletenessService;
 
-    public DashboardController(RequestLogRepository requestLogRepository,
-                                LogCompletenessService logCompletenessService) {
-        this.requestLogRepository = requestLogRepository;
+    public DashboardController(RequestLogRepository logs, ApiRegistrationService apis,
+                               LogCompletenessService logCompletenessService) {
+        this.logs = logs;
+        this.apis = apis;
         this.logCompletenessService = logCompletenessService;
     }
 
-    @GetMapping("/{apiId}/summary")
-    public ResponseEntity<SummaryResponse> summary(
-        @PathVariable Long apiId,
-        @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant from,
-        @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant to
-    ) {
-        Instant effectiveTo = to != null ? to : Instant.now();
-        Instant effectiveFrom = from != null ? from : effectiveTo.minus(24, ChronoUnit.HOURS);
-
-        long allowed = 0;
-        long blocked = 0;
-        for (var row : requestLogRepository.countByOutcome(apiId, effectiveFrom, effectiveTo)) {
-            if (row.getOutcome() == RequestLog.Outcome.ALLOWED) allowed = row.getCount();
-            else blocked = row.getCount();
+    // Allowed vs blocked per API, last 24 hours.
+    @GetMapping("/stats/summary")
+    public SummaryResponse summary(Authentication auth) {
+        Instant to = Instant.now();
+        Instant from = to.minus(24, ChronoUnit.HOURS);
+        List<ApiSummary> perApi = new ArrayList<>();
+        for (RegisteredApi api : apis.ownedApis(auth.getName())) {
+            long allowed = 0, blocked = 0;
+            for (var row : logs.countByOutcome(api.getId(), from, to)) {
+                if (row.getOutcome() == RequestLog.Outcome.ALLOWED) allowed = row.getCount();
+                else blocked = row.getCount();
+            }
+            perApi.add(new ApiSummary(api.getId(), api.getName(), allowed, blocked));
         }
-
-        return ResponseEntity.ok(new SummaryResponse(apiId, allowed, blocked, effectiveFrom, effectiveTo));
+        return new SummaryResponse(perApi);
     }
 
-    // All filters are optional - omit any of them to fall back to "no
-    // restriction" on that field. This is what the dashboard's log table
-    // filter controls (outcome dropdown, client search box, date pickers)
-    // will call.
-    @GetMapping("/{apiId}/logs")
-    public ResponseEntity<Page<LogEntryResponse>> logs(
-        @PathVariable Long apiId,
-        @RequestParam(required = false) RequestLog.Outcome outcome,
-        @RequestParam(required = false) String clientIdentity,
-        @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant from,
-        @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant to,
-        @RequestParam(defaultValue = "0") int page,
-        @RequestParam(defaultValue = "50") int size
-    ) {
-        Page<LogEntryResponse> result = requestLogRepository
-            .findFiltered(apiId, outcome, clientIdentity, from, to, PageRequest.of(page, size))
-            .map(log -> new LogEntryResponse(
-                log.getId(),
-                log.getClientIdentity(),
-                log.getOutcome().name(),
-                log.getTimestamp(),
-                log.getLatencyMs()
-            ));
-        return ResponseEntity.ok(result);
+    // 24 hourly points, oldest first. Optional apiId narrows it to one API.
+    @GetMapping("/stats/timeseries")
+    public List<HourPoint> timeseries(Authentication auth, @RequestParam(required = false) Long apiId) {
+        List<Long> ids = apiIds(auth, apiId);
+        long nowHour = Instant.now().getEpochSecond() / 3600;
+        long firstHour = nowHour - 23;
+        long[] allowed = new long[24], blocked = new long[24];
+
+        if (!ids.isEmpty()) {
+            for (Object[] row : logs.hourlyCounts(ids, Instant.ofEpochSecond(firstHour * 3600))) {
+                int i = (int) (((Number) row[0]).longValue() - firstHour);
+                if (i < 0 || i > 23) continue;
+                long count = ((Number) row[2]).longValue();
+                if ("ALLOWED".equals(String.valueOf(row[1]))) allowed[i] += count;
+                else blocked[i] += count;
+            }
+        }
+        List<HourPoint> out = new ArrayList<>();
+        for (int i = 0; i < 24; i++) out.add(new HourPoint((firstHour + i) * 3600_000, allowed[i], blocked[i]));
+        return out;
     }
 
-    // Reports the proposal's log-completeness metric for one API over a
-    // window. "expected" has to come from whoever drove the load (a
-    // load-test script's own request tally, or a counter kept by the
-    // gateway) - this endpoint can only tell you what fraction of that
-    // actually landed in Postgres.
-    @GetMapping("/{apiId}/completeness")
-    public ResponseEntity<CompletenessResponse> completeness(
+    // Request log table. status=200 -> allowed only, status=429 -> blocked only.
+    @GetMapping("/logs")
+    public LogPage logs(Authentication auth,
+                        @RequestParam(required = false) String status,
+                        @RequestParam(required = false) Long apiId,
+                        @RequestParam(defaultValue = "0") int page,
+                        @RequestParam(defaultValue = "20") int size) {
+        List<RegisteredApi> mine = apis.ownedApis(auth.getName());
+        Map<Long, String> names = new HashMap<>();
+        mine.forEach(a -> names.put(a.getId(), a.getName()));
+        List<Long> ids = apiIds(auth, apiId);
+        if (ids.isEmpty()) return new LogPage(List.of(), 0);
+
+        PageRequest pr = PageRequest.of(Math.max(page, 0), Math.min(Math.max(size, 1), 100));
+        Page<RequestLog> result;
+        if ("200".equals(status)) result = logs.findByApiIdInAndOutcomeOrderByTimestampDesc(ids, RequestLog.Outcome.ALLOWED, pr);
+        else if ("429".equals(status)) result = logs.findByApiIdInAndOutcomeOrderByTimestampDesc(ids, RequestLog.Outcome.BLOCKED, pr);
+        else result = logs.findByApiIdInOrderByTimestampDesc(ids, pr);
+
+        List<LogEntry> items = result.getContent().stream().map(l -> new LogEntry(
+            l.getId(), l.getTimestamp().toString(), l.getApiId(), names.get(l.getApiId()),
+            l.getClientIdentity(), l.getOutcome().name(), l.getStatus(), l.getLatencyMs()
+        )).toList();
+        return new LogPage(items, result.getTotalElements());
+    }
+
+    // Log-completeness metric for one API. "expected" comes from the load
+    // driver's own tally; this reports what fraction reached Postgres.
+    @GetMapping("/stats/{apiId}/completeness")
+    public CompletenessResponse completeness(
+        Authentication auth,
         @PathVariable Long apiId,
         @RequestParam long expected,
         @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant from,
         @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant to
     ) {
-        return ResponseEntity.ok(logCompletenessService.measure(apiId, expected, from, to));
+        apis.getOwned(auth.getName(), apiId); // 404 unless it's yours
+        return logCompletenessService.measure(apiId, expected, from, to);
+    }
+
+    // The user's API ids, or just one of them (after checking it's theirs).
+    private List<Long> apiIds(Authentication auth, Long apiId) {
+        if (apiId != null) return List.of(apis.getOwned(auth.getName(), apiId).getId());
+        return apis.ownedApis(auth.getName()).stream().map(RegisteredApi::getId).toList();
     }
 }

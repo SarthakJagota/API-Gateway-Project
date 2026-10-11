@@ -2,35 +2,48 @@ package com.gateway.api_gateway.controller;
 
 import com.gateway.api_gateway.dto.ApiDtos.RegisterApiRequest;
 import com.gateway.api_gateway.dto.ApiDtos.RegisteredApiResponse;
+import com.gateway.api_gateway.dto.ApiDtos.UpdatePolicyRequest;
 import com.gateway.api_gateway.service.ApiRegistrationService;
 import jakarta.validation.Valid;
-import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
+// Authentication.getName() is the email we put as the JWT subject in JwtAuthFilter.
 @RestController
 @RequestMapping("/api/apis")
 public class ApiRegistrationController {
 
-    private final ApiRegistrationService apiRegistrationService;
+    private final ApiRegistrationService service;
 
-    public ApiRegistrationController(ApiRegistrationService apiRegistrationService) {
-        this.apiRegistrationService = apiRegistrationService;
+    public ApiRegistrationController(ApiRegistrationService service) {
+        this.service = service;
     }
 
-    // Authentication.getName() is the email we put as the JWT subject in JwtAuthFilter.
     @PostMapping
-    public ResponseEntity<RegisteredApiResponse> register(
-        Authentication authentication,
-        @Valid @RequestBody RegisterApiRequest request
-    ) {
-        return ResponseEntity.ok(apiRegistrationService.register(authentication.getName(), request));
+    public RegisteredApiResponse register(Authentication auth, @Valid @RequestBody RegisterApiRequest request) {
+        return service.register(auth.getName(), request);
     }
 
     @GetMapping
-    public ResponseEntity<List<RegisteredApiResponse>> listMine(Authentication authentication) {
-        return ResponseEntity.ok(apiRegistrationService.listForOwner(authentication.getName()));
+    public List<RegisteredApiResponse> listMine(Authentication auth) {
+        return service.listForOwner(auth.getName());
+    }
+
+    @GetMapping("/{id}")
+    public RegisteredApiResponse get(Authentication auth, @PathVariable Long id) {
+        return service.get(auth.getName(), id);
+    }
+
+    @PutMapping("/{id}")
+    public RegisteredApiResponse updatePolicy(Authentication auth, @PathVariable Long id,
+                                              @Valid @RequestBody UpdatePolicyRequest request) {
+        return service.updatePolicy(auth.getName(), id, request);
+    }
+
+    @PostMapping("/{id}/rotate-key")
+    public RegisteredApiResponse rotateKey(Authentication auth, @PathVariable Long id) {
+        return service.rotateKey(auth.getName(), id);
     }
 }

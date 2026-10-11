@@ -1,0 +1,16 @@
+# Runs on every push / pull request: builds the app and runs all tests,
+# including the Redis/Postgres ones (Testcontainers uses the runner's Docker).
+# A regression in limiting accuracy fails the build.
+name: CI
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: maven
+      - run: chmod +x mvnw && ./mvnw -B verify

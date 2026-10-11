@@ -42,12 +42,21 @@ public class RequestLog {
     @Column(name = "latency_ms")
     private Long latencyMs;
 
+    // HTTP status sent back to the client (429 when blocked, else the origin's status).
+    @Column(name = "status")
+    private Integer status;
+
     public RequestLog() {}
 
     public RequestLog(Long apiId, String clientIdentity, Outcome outcome, Long latencyMs) {
+        this(apiId, clientIdentity, outcome, null, latencyMs);
+    }
+
+    public RequestLog(Long apiId, String clientIdentity, Outcome outcome, Integer status, Long latencyMs) {
         this.apiId = apiId;
         this.clientIdentity = clientIdentity;
         this.outcome = outcome;
+        this.status = status;
         this.latencyMs = latencyMs;
     }
 
@@ -57,4 +66,5 @@ public class RequestLog {
     public Outcome getOutcome() { return outcome; }
     public Instant getTimestamp() { return timestamp; }
     public Long getLatencyMs() { return latencyMs; }
+    public Integer getStatus() { return status; }
 }

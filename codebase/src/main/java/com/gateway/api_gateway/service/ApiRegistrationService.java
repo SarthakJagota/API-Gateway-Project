@@ -9,6 +9,7 @@ import com.gateway.api_gateway.entity.User;
 import com.gateway.api_gateway.gateway.RouteCache;
 import com.gateway.api_gateway.repository.PolicyRepository;
 import com.gateway.api_gateway.repository.RegisteredApiRepository;
+import com.gateway.api_gateway.repository.RequestLogRepository;
 import com.gateway.api_gateway.repository.UserRepository;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
@@ -27,19 +28,22 @@ public class ApiRegistrationService {
     private final UserRepository userRepository;
     private final UrlValidationService urlValidationService;
     private final RouteCache routeCache;
+    private final RequestLogRepository requestLogRepository;
 
     public ApiRegistrationService(
         RegisteredApiRepository registeredApiRepository,
         PolicyRepository policyRepository,
         UserRepository userRepository,
         UrlValidationService urlValidationService,
-        RouteCache routeCache
+        RouteCache routeCache,
+        RequestLogRepository requestLogRepository
     ) {
         this.registeredApiRepository = registeredApiRepository;
         this.policyRepository = policyRepository;
         this.userRepository = userRepository;
         this.urlValidationService = urlValidationService;
         this.routeCache = routeCache;
+        this.requestLogRepository = requestLogRepository;
     }
 
     @Transactional
@@ -103,6 +107,18 @@ public class ApiRegistrationService {
         registeredApiRepository.save(api);
         routeCache.evict(apiId); // old key stops working right away
         return toResponse(api, policyOf(api));
+    }
+
+    // Deletes an API the caller owns, with its policy and logs. Its gateway URL
+    // stops working immediately on this instance (cache evicted) and its short
+    // name becomes free to register again. Redis counters expire on their own.
+    @Transactional
+    public void delete(String ownerEmail, Long apiId) {
+        RegisteredApi api = getOwned(ownerEmail, apiId);
+        requestLogRepository.deleteByApiId(apiId);
+        policyRepository.findByRegisteredApi(api).ifPresent(policyRepository::delete);
+        registeredApiRepository.delete(api);
+        routeCache.forget(apiId, api.getSlug());
     }
 
     public List<RegisteredApi> ownedApis(String ownerEmail) {

@@ -5,6 +5,7 @@ import com.gateway.api_gateway.dto.ApiDtos.RegisteredApiResponse;
 import com.gateway.api_gateway.dto.ApiDtos.UpdatePolicyRequest;
 import com.gateway.api_gateway.service.ApiRegistrationService;
 import jakarta.validation.Valid;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
@@ -40,6 +41,12 @@ public class ApiRegistrationController {
     public RegisteredApiResponse updatePolicy(Authentication auth, @PathVariable Long id,
                                               @Valid @RequestBody UpdatePolicyRequest request) {
         return service.updatePolicy(auth.getName(), id, request);
+    }
+
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> delete(Authentication auth, @PathVariable Long id) {
+        service.delete(auth.getName(), id);
+        return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/{id}/rotate-key")

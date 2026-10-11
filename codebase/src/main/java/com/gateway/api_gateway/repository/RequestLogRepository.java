@@ -4,6 +4,7 @@ import com.gateway.api_gateway.entity.RequestLog;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -43,6 +44,11 @@ public interface RequestLogRepository extends JpaRepository<RequestLog, Long> {
                                          @Param("from") Instant from,
                                          @Param("to") Instant to,
                                          Pageable pageable);
+
+    // Used when an owner deletes an API: removes all its log rows in one statement.
+    @Modifying
+    @Query("DELETE FROM RequestLog r WHERE r.apiId = :apiId")
+    int deleteByApiId(@Param("apiId") Long apiId);
 
     // Dashboard log table across several of the user's APIs.
     Page<RequestLog> findByApiIdInOrderByTimestampDesc(Collection<Long> apiIds, Pageable pageable);

@@ -127,8 +127,10 @@ async function apiDetail(id){const [x,ts]=await Promise.all([req('/api/apis/'+id
 shell('apis',`<a href="#apis" style="color:var(--mute)">Back to My APIs</a><h1 style="margin-top:.5rem">${esc(x.name)}</h1>
 <div class="panel"><h3>Connect your clients</h3><label>Gateway endpoint</label><div class="copy"><code>${esc(x.gatewayUrl)}</code>${copyBtn(x.gatewayUrl)}</div><label>API key</label><div class="copy"><code>${esc(x.apiKey)}</code>${copyBtn(x.apiKey)}<button class="btn ghost sm" id="rk">Rotate</button></div><label>Example</label><pre>curl ${esc(x.gatewayUrl)} \\\n  -H "X-API-Key: ${esc(x.apiKey)}"\n# over the limit: HTTP 429 + Retry-After</pre></div>
 <div class="panel"><h3>Policy</h3><form id="pf"><div class="two"><div><label for="l">Requests allowed</label><input id="l" type="number" min="1" value="${x.limit}"></div><div><label for="w">Per (seconds)</label><input id="w" type="number" min="1" value="${x.windowSeconds}"></div></div><label for="a">Algorithm</label><select id="a"><option value="TOKEN_BUCKET">Token bucket</option><option value="SLIDING_WINDOW">Sliding window</option></select><p><button class="btn pri">Save policy</button></p></form></div>
-<div class="panel"><h3>Traffic, last 24 hours</h3>${chart(ts)}</div>`);
+<div class="panel"><h3>Traffic, last 24 hours</h3>${chart(ts)}</div>
+<div class="panel"><h3>Delete this API</h3><p style="color:var(--mute);max-width:600px">Removes the API, its policy and all its request logs. Its gateway URL stops working immediately. This cannot be undone.</p><button class="btn ghost" id="del" style="border-color:#C84710;color:#C84710">Delete API</button></div>`);
 $('#a').value=x.algorithm;
+$('#del').onclick=async()=>{if(confirm('Delete "'+x.name+'"? Its gateway URL stops working and its logs are erased.')){await req('/api/apis/'+id,{method:'DELETE'});toast('API deleted');go('apis')}};
 $('#rk').onclick=async()=>{if(confirm('Clients using the old key will stop working. Rotate it?')){await req(`/api/apis/${id}/rotate-key`,{method:'POST'});apiDetail(id);toast('Key rotated')}};
 $('#pf').onsubmit=async e=>{e.preventDefault();await req('/api/apis/'+id,{method:'PUT',body:{limit:+$('#l').value,windowSeconds:+$('#w').value,algorithm:$('#a').value}});toast('Policy saved')}}
 

@@ -44,12 +44,21 @@ public class RouteCache {
             return get(Long.parseLong(key));
         }
         Long id = slugToId.get(key);
-        if (id == null) {
-            id = registeredApiRepository.findBySlug(key).map(RegisteredApi::getId).orElse(null);
-            if (id == null) return null;
-            slugToId.put(key, id);
+        if (id != null) {
+            Route cached = get(id);
+            if (cached != null) return cached;
+            slugToId.remove(key); // API was deleted (maybe on another instance) - look it up again
         }
+        id = registeredApiRepository.findBySlug(key).map(RegisteredApi::getId).orElse(null);
+        if (id == null) return null;
+        slugToId.put(key, id);
         return get(id);
+    }
+
+    /** Called when an API is deleted. */
+    public void forget(long apiId, String slug) {
+        cache.remove(apiId);
+        if (slug != null) slugToId.remove(slug);
     }
 
     /** @return the route, or null if no such API (or its target is no longer allowed). */

@@ -711,26 +711,24 @@ measured on the deployed system.
 \section{Future Work and Recommendations}
 
 \begin{enumerate}
-  \item \textbf{Complete the evaluation:} run a scripted load test against
-    two deployed instances and count admitted requests at the origin; report
-    deployed p50/p95 overhead, sustained throughput per instance count,
-    dashboard freshness and uptime over a fixed pilot window; and carry out
-    the usability study with 5--10 developers.
-  \item \textbf{Strengthen the pipeline:} add static analysis and linting,
-    build and publish the container image in CI, add a staging environment
-    before production, and fail the build when p95 overhead exceeds the
-    budget.
-  \item \textbf{Product features:} request replay from the log, a live
-    side-by-side comparison of the two algorithms, client and date filters
-    in the log view, and per-API-key (not only per-IP) budgets.
-  \item \textbf{Operational hardening:} store the fail policy centrally
-    rather than per instance and restrict who may change it, require the JWT
-    secret to be set rather than falling back to a development default, and
-    move to a durable log pipeline (for example a queue) so that a crash
-    cannot drop log rows.
-  \item \textbf{Scalability:} use pre-aggregated summary tables for the
-    dashboard as log volume grows, and run Redis with replication so the
-    counter store is not a single point of failure.
+  \item \textbf{Rate-limit login attempts} to slow down password guessing,
+    reusing the gateway's own Redis-backed limiter.
+  \item \textbf{Store API keys hashed} rather than in plain text, showing
+    each key to the owner only once when it is created or rotated.
+  \item \textbf{Close the DNS-rebinding gap:} target addresses are already
+    re-checked whenever a route is reloaded, but the address the proxy
+    actually connects to should also be checked at connection time.
+  \item \textbf{Optional per-API-key budgets:} let an owner choose one
+    shared budget per API key instead of a separate budget for each
+    client IP.
+  \item \textbf{Alerting:} Redis health and latency are already shown on
+    the System page; add alerts (for example by email) when Redis goes down
+    or p95 latency crosses the budget.
+  \item \textbf{More tests} for authentication, authorization and tenant
+    isolation, checking that one user can never see or change another
+    user's APIs or logs.
+  \item \textbf{Complete the evaluation} with a load test against the
+    deployed system, reporting p95 overhead and uptime over a fixed period.
 \end{enumerate}
 
 \section{Final Remarks}

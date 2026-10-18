@@ -12,9 +12,8 @@ import java.util.Date;
 @Component
 public class JwtUtil {
 
-    // IMPORTANT: this comes from an environment variable, never hardcoded.
-    // See application.properties / SECURITY.md for how it's supplied in each
-    // environment (local .env, Render/Railway secret config, etc.)
+    // IMPORTANT: this comes from the JWT_SECRET environment variable, never
+    // hardcoded. Local runs get a dev-only value from the 'local' profile.
     private final SecretKey signingKey;
     private final long expirationMillis;
 
@@ -22,8 +21,13 @@ public class JwtUtil {
         @Value("${app.jwt.secret}") String secret,
         @Value("${app.jwt.expiration-ms:86400000}") long expirationMillis
     ) {
-        // HS256 needs a key of at least 256 bits; fail fast in dev if the
-        // configured secret is too short rather than deploying something weak.
+        if (secret == null || secret.isBlank()) {
+            throw new IllegalStateException(
+                "JWT_SECRET is not set. Set it to a random string of 32+ characters, "
+                + "or run locally with the 'local' profile.");
+        }
+        // HS256 needs a key of at least 256 bits; fail fast if the configured
+        // secret is too short rather than deploying something weak.
         if (secret.getBytes().length < 32) {
             throw new IllegalStateException(
                 "app.jwt.secret must be at least 32 bytes long for HS256");

@@ -54,14 +54,17 @@ public class RateLimiter {
 
     // "open" = let traffic through unlimited if Redis is down (keeps the API up)
     // "closed" = reject traffic if Redis is down (keeps the protection)
-    // Changed from the System page; kept per instance to stay simple.
-    private volatile String failPolicy;
+    // Set once at startup from FAIL_POLICY; it covers every API, so no user can change it.
+    private final String failPolicy;
     private volatile long redisDownUntil = 0;
 
     public RateLimiter(JedisPool jedisPool, ProxyManager<byte[]> buckets,
                        @Value("${app.ratelimit.fail-policy:open}") String failPolicy) {
         this.jedisPool = jedisPool;
         this.buckets = buckets;
+        if (!"open".equals(failPolicy) && !"closed".equals(failPolicy)) {
+            throw new IllegalArgumentException("app.ratelimit.fail-policy must be 'open' or 'closed', got: " + failPolicy);
+        }
         this.failPolicy = failPolicy;
     }
 
@@ -134,11 +137,4 @@ public class RateLimiter {
     }
 
     public String getFailPolicy() { return failPolicy; }
-
-    public void setFailPolicy(String policy) {
-        if (!"open".equals(policy) && !"closed".equals(policy)) {
-            throw new IllegalArgumentException("failPolicy must be 'open' or 'closed'");
-        }
-        this.failPolicy = policy;
-    }
 }

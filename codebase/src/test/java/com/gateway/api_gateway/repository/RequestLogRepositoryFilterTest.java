@@ -39,6 +39,7 @@ class RequestLogRepositoryFilterTest {
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
         registry.add("spring.jpa.hibernate.ddl-auto", () -> "create-drop");
+        registry.add("app.jwt.secret", () -> "test_secret_at_least_32_bytes_long_______");
     }
 
     @Autowired

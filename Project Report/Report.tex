@@ -396,8 +396,10 @@ outage that took every protected API offline would be worse, for most
 users, than a short period without limiting. Redis calls use a 500\,ms
 socket timeout, and after one failure the limiter skips Redis for five
 seconds (a minimal circuit breaker), so an outage does not add a timeout to
-every request. The policy can be changed from the dashboard's System page,
-which also shows whether Redis is currently up.
+every request. Because the policy affects every API on the gateway, it is
+set by the operator through the \texttt{FAIL\_POLICY} environment variable
+rather than from the dashboard; the System page displays it, together with
+whether Redis is currently up.
 
 \paragraph{Client identity.} Budgets are kept per client IP address. The
 production deployment runs behind Cloudflare, where the socket address is a

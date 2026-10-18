@@ -1,453 +1,158 @@
+# API Gateway — Self-Service Rate Limiting for Web APIs
 
-# API Gateway — Self-Service Rate-Limiting Layer for Web APIs
+A reverse proxy that puts per-client rate limits in front of any existing HTTP API, without changing the API.
+A developer registers their API, picks a limit and an algorithm, and gets a gateway URL and an API key.
+Clients over their budget get **HTTP 429** with an accurate `Retry-After`.
 
-A lightweight, self-service API Gateway that protects existing APIs through distributed rate limiting, authentication, request logging, and traffic analytics — without requiring modifications to the target API.
+**Live demo:** https://api-gateway-yp6s.onrender.com/ (free tier, so the first load can take ~30 s)
 
-**Live Website:** https://api-gateway-yp6s.onrender.com/
+**Stack:** Java 17 · Spring Boot 4 · Redis · Bucket4j · PostgreSQL · Spring Security + JWT · Docker · GitHub Actions · Testcontainers
 
 ---
 
-## Overview
+## Highlights
 
-Uncontrolled API traffic can cause resource exhaustion, excessive infrastructure costs, unfair resource usage, and service degradation.
+- **Exact limits across instances.** Every decision is one atomic operation inside Redis, so two gateway instances can never hand out the same slot. In tests, **exactly 20 of 400** concurrent requests got through a limit of 20, using two independent instances, for both algorithms.
+- **Two algorithms, chosen per API.** Token bucket (Bucket4j, compare-and-swap on Redis) and a true sliding window (a Redis sorted set updated by a single Lua script).
+- **Explicit failure behaviour.** If Redis is down, the gateway either fails open (stays available) or fails closed (keeps protection), as configured. A small circuit breaker stops every request from waiting on a Redis timeout.
+- **Logging kept off the request path.** Every request is logged to PostgreSQL asynchronously. **2000 of 2000** concurrent writes landed in tests.
+- **Safe to expose.** Only forwards to registered targets, and refuses private, loopback and cloud-metadata addresses (SSRF protection). It re-checks targets whenever a route reloads.
+- **Works behind a CDN.** Reads the real client IP from `CF-Connecting-IP` when configured. This is off by default, so local deployments can't be spoofed.
+- **Dashboard.** Traffic charts, a filterable request log, a load-test lab and a system health page (Redis status, p50/p95 latency the gateway adds).
 
-This project provides a reverse proxy that allows developers to register APIs, configure request limits, and expose their services through protected gateway endpoints.
-
-The gateway evaluates incoming requests against configured rate-limit policies, forwards permitted requests to their target APIs, and returns **HTTP 429 — Too Many Requests** when the configured limit is exceeded.
-
-## Features
-
-- **Authentication**
-  - User registration and login
-  - JWT-based authentication
-- **Distributed Rate Limiting**
-  - Token Bucket algorithm
-  - Sliding Window-style fixed-interval limiting
-  - Configurable request limits
-  - HTTP 429 responses and `Retry-After` support
-  - Redis-backed shared rate-limit state
-- **Reverse Proxy**
-  - Forward requests to registered target APIs
-  - Relay origin responses to clients
-  - Readable, client-defined gateway paths
-- **Client Identification**
-  - Real client IP extraction using Cloudflare's `CF-Connecting-IP` header when explicitly enabled
-  - Separate rate-limit budgets for different clients
-- **API Management**
-  - API registration and configuration
-  - PostgreSQL-backed API information
-- **Request Logging**
-  - Client identity, timestamps, and request outcomes
-  - Persistent request records
-- **Analytics Dashboard**
-  - Allowed and blocked request statistics
-  - Traffic trends and per-API breakdowns
-  - Request log filtering and pagination
-- **Reliability**
-  - Fail-open behavior when Redis is unavailable
-  - Automated deployment through Render's GitHub integration
-  - UptimeRobot availability monitoring
-
-## Architecture
+## How a request flows
 
 ```mermaid
-flowchart TD
-    A(["Client"]) --> B["Spring Cloud Gateway"]
-    B --> C["Client Identification"]
-    C --> D["Load API Configuration"]
-    D --> E[("Redis + Bucket4j")]
-    E --> F{"Rate Limit Passed?"}
-
-    F -- Yes --> G["Forward Request"]
-    G --> H["Target API"]
-    H --> I["Return Response"]
-
-    F -- No --> J["HTTP 429 Response"]
-
-    I --> K[("PostgreSQL")]
-    J --> K
-    K --> L["React Analytics Dashboard"]
-
-    classDef client fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
-    classDef gateway fill:#ede9fe,stroke:#7c3aed,color:#4c1d95
-    classDef storage fill:#d1fae5,stroke:#059669,color:#064e3b
-    classDef decision fill:#fef3c7,stroke:#d97706,color:#78350f
-    classDef target fill:#cffafe,stroke:#0891b2,color:#164e63
-    classDef blocked fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
-
-    class A client
-    class B,C,D gateway
-    class E,K storage
-    class F decision
-    class G,H,I target
-    class J blocked
-    class L gateway
+flowchart LR
+    C(["Client"]) -->|"/g/name/... + X-API-Key"| G["Gateway controller"]
+    G -->|"resolve API + policy (cached 30 s)"| P[("PostgreSQL")]
+    G -->|"atomic consume-or-reject"| R[("Redis")]
+    G -->|"allowed"| T["Target API"]
+    T -->|"response relayed as-is"| C
+    G -.->|"blocked: 429 + Retry-After"| C
+    G -->|"async log row"| P
+    D["Dashboard (JWT)"] -->|"aggregated stats"| P
 ```
 
-The gateway uses Spring Cloud Gateway for request routing, Bucket4j and Redis for distributed rate limiting, PostgreSQL for persistent application data, and React for the analytics interface.
+1. `GatewayController` looks up the registered API by its short name in the `RouteCache` and checks the `X-API-Key`.
+2. `RateLimiter` asks Redis for a decision, keyed by API and client IP.
+3. If allowed, the request is forwarded to the target with the JDK `HttpClient`, and the response (status, headers, body) is relayed back unchanged. Redirects are relayed, not followed.
+4. If blocked, the client gets `429` with the real wait time in `Retry-After`.
+5. Either way, `RequestLogService` writes the outcome to PostgreSQL on a background thread.
 
-## How It Works
+## Rate-limiting algorithms
 
-1. A developer creates an account and authenticates.
-2. The developer registers a target API.
-3. The application provides a gateway endpoint and API key.
-4. The developer configures the API's rate-limit policy.
-5. A client sends a request through the gateway.
-6. The gateway identifies the client and resolves the relevant API configuration.
-7. Redis-backed Bucket4j evaluates the rate-limit policy.
-8. If permitted, the gateway forwards the request to the target API.
-9. If the limit is exceeded, the gateway returns HTTP 429.
-10. Request outcomes are persisted in PostgreSQL.
-11. The dashboard presents available traffic and request statistics.
+**Token bucket.** A bucket of capacity *C* refills at *limit / window* tokens per second, and each request takes one token. This allows bursts up to *C* while holding the long-run average. It's implemented with Bucket4j's Redis proxy manager, using compare-and-swap updates. The policy values are part of the Redis key, so editing a policy takes effect immediately.
 
-## API Registration and Authentication Workflow
+**Sliding window.** One Lua script, run atomically by Redis:
 
-```mermaid
-flowchart TD
-    A(["Developer"]) --> B["Sign Up / Log In"]
-    B --> C{"Authentication Valid?"}
-
-    C -- No --> D["Return Authentication Error"]
-    D --> B
-
-    C -- Yes --> E["Access Dashboard"]
-    E --> F["Register Target API"]
-    F --> G["Configure Rate Limit"]
-    G --> H[("PostgreSQL")]
-    H --> I["Gateway Endpoint and API Key"]
-    I --> J["Client Sends API Request"]
-    J --> K["Gateway Enforces Policy"]
-
-    classDef user fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
-    classDef auth fill:#fce7f3,stroke:#db2777,color:#831843
-    classDef config fill:#ede9fe,stroke:#7c3aed,color:#4c1d95
-    classDef database fill:#d1fae5,stroke:#059669,color:#064e3b
-    classDef gateway fill:#cffafe,stroke:#0891b2,color:#164e63
-
-    class A,E user
-    class B,C,D auth
-    class F,G,I config
-    class H database
-    class J,K gateway
+```lua
+redis.call('ZREMRANGEBYSCORE', key, 0, now - window)   -- drop expired entries
+if redis.call('ZCARD', key) < limit then                -- room left?
+  redis.call('ZADD', key, now, requestId)               -- admit and record
+  return -1
+end
+return oldest + window - now                            -- ms until a slot frees up
 ```
 
-## Gateway Request Flow
+It uses Redis's own clock (`TIME`), so instances whose clocks disagree still agree on the window. An earlier version used Bucket4j's interval refill, but that's really a *fixed* window: it lets up to 2*N* requests through around a window boundary, which is why it was replaced.
 
-```mermaid
-flowchart TD
-    A(["Incoming Request"]) --> B["Resolve Client IP"]
-    B --> C["Retrieve API Policy"]
-    C --> D["Check Redis-Backed Bucket"]
-    D --> E{"Tokens Available?"}
+## Results
 
-    E -- Yes --> F["Forward to Origin"]
-    F --> G["Return Origin Response"]
+All results come from `./mvnw verify` against real Redis 7 and PostgreSQL 16 containers.
 
-    E -- No --> H["Reject with HTTP 429"]
-    H --> I["Include Retry-After"]
+| What | Target | Result |
+|---|---|---|
+| Enforcement accuracy: 2 instances, 400 concurrent requests, limit 20 | within ±2% | **20 / 20 admitted** (token bucket and sliding window) |
+| Redis down | defined and tested | fail-open allows, fail-closed blocks, breaker answers in < 50 ms |
+| Log completeness: 2000 concurrent async writes | ≥ 99.9% | **100%** |
+| Log filters (outcome, client, date range, per-API isolation) | correct | 4 / 4 pass |
 
-    G --> J["Record Request Outcome"]
-    I --> J
-    J --> K[("PostgreSQL Request Logs")]
+A local benchmark measured about **26.5 ms** of added latency (the mean over 20 requests, with persistent connections on both sides), against a 50 ms budget. The live System page reports p50 and p95 latency added by the gateway, measured on every request.
 
-    classDef request fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
-    classDef processing fill:#ede9fe,stroke:#7c3aed,color:#4c1d95
-    classDef allowed fill:#d1fae5,stroke:#059669,color:#064e3b
-    classDef rejected fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
-    classDef database fill:#fef3c7,stroke:#d97706,color:#78350f
+## Run it locally
 
-    class A request
-    class B,C,D processing
-    class E processing
-    class F,G allowed
-    class H,I rejected
-    class J,K database
+You need Java 17+ and Docker.
+
+```bash
+cd codebase
+docker compose up --build        # Postgres + Redis + app → http://localhost:8080
 ```
 
-## Rate-Limiting Algorithms
+Or run the app from your IDE or terminal while coding:
 
-### 1. Token Bucket
-
-The Token Bucket algorithm maintains a bucket with a configured capacity and refill policy.
-
-- Each permitted request consumes a token.
-- Tokens refill according to the configured policy.
-- Requests without available tokens are rejected.
-- Redis provides shared state across gateway instances.
-
-```text
-Bucket Capacity = 5 requests
-Refill Policy   = 5 tokens every 20 seconds
-
-Request
-   |
-   v
-Token Available?
-   |
-   +-- Yes --> Consume Token --> Forward Request
-   |
-   +-- No  --> HTTP 429
+```bash
+cd codebase
+docker compose up -d postgres redis
+./mvnw spring-boot:run -Dspring-boot.run.profiles=local    # Windows: .\mvnw.cmd ...
 ```
 
-### 2. Sliding Window-Style Limiting
+Open http://localhost:8080, create an account, register an API, then call it:
 
-The second supported mode uses interval-based token replenishment through Bucket4j's `refillIntervally` configuration.
-
-This provides fixed-interval replenishment rather than the gradual refill behavior of the Token Bucket configuration.
-
-Both modes can be evaluated against comparable workloads to understand their enforcement behavior.
-
-## Distributed Rate Limiting
-
-A single gateway instance can maintain local request state, but local counters cannot guarantee consistent enforcement across multiple instances.
-
-This project uses Redis-backed Bucket4j buckets to maintain shared state.
-
-### Concurrency Validation
-
-The concurrency test uses Testcontainers to start a dedicated Redis instance and exercises the rate-limiting logic with:
-
-- 200 requests
-- 20 concurrent threads
-- A configured capacity of 20 requests
-
-The observed result was exactly 20 admitted requests out of 200.
-
-### Multi-Instance Validation
-
-Two gateway instances were tested against the same Redis instance. Requests shared a common rate-limit budget rather than receiving separate independent budgets on each instance.
-
-This validates the shared-state enforcement behavior under the tested configuration.
-
-## Client IP Identification Behind Cloudflare
-
-When the application is deployed behind Cloudflare, the gateway's direct remote address can represent a Cloudflare edge server instead of the original client.
-
-To address this, the gateway supports extracting the client IP from the `CF-Connecting-IP` header.
-
-- The behavior is configurable and disabled by default.
-- When enabled behind the intended Cloudflare deployment, the header provides the client IP used for rate-limit key construction.
-- Different clients can receive separate rate-limit budgets.
-- Logs can record the resolved client IP for diagnosis.
-
-**Security consideration:** Forwarded client-IP headers must only be trusted when the application is protected by a trusted proxy that controls those headers. Enabling this option on a directly accessible deployment can allow clients to spoof their identities.
-
-## Readable Gateway URLs
-
-The gateway supports readable client-defined path names rather than requiring numeric identifiers in the public path.
-
-For example:
-
-```text
-Numeric-style path:
-/g/4/forecast
-
-Readable path:
-/weatherhello/forecast
+```bash
+curl http://localhost:8080/g/<short-name>/any/path -H "X-API-Key: <key>"
+# over the limit → HTTP 429 + Retry-After
 ```
 
-Readable paths make endpoints easier to recognize and share without requiring a separate DNS record for each registered API.
+Run the tests (Docker must be running):
 
-## Fail-Open Behavior
-
-The rate limiter uses a fail-open policy for Redis connectivity failures.
-
-If Redis becomes unavailable, the gateway logs a warning and allows the request through rather than returning an unhandled server error solely because rate-limit state cannot be accessed.
-
-This improves availability but temporarily weakens rate-limit enforcement during Redis outages. The trade-off is intentional and should be considered when deploying the gateway for security-sensitive workloads.
-
-## Technology Stack
-
-| Component | Technology |
-|---|---|
-| Backend | Spring Boot |
-| API Gateway | Spring Cloud Gateway |
-| Rate Limiting | Bucket4j |
-| Distributed State | Redis |
-| Database | PostgreSQL |
-| Persistence | Spring Data JPA |
-| Authentication | Spring Security and JWT |
-| Frontend | React |
-| Charts | Recharts |
-| Unit Testing | JUnit |
-| Integration Testing | Testcontainers |
-| API Testing | Postman |
-| Version Control | Git and GitHub |
-| Deployment | Render |
-| Uptime Monitoring | UptimeRobot |
-
-## Deployment and Uptime Monitoring
-
-```mermaid
-flowchart TD
-    A["Developer Pushes Code"] --> B["GitHub Repository"]
-    B --> C["Render Auto-Deploy"]
-    C --> D["Build Application"]
-    D --> E{"Deployment Successful?"}
-
-    E -- Yes --> F(["Live Application"])
-    E -- No --> G["Inspect Build and Deploy Logs"]
-
-    F --> H["UptimeRobot Periodic Check"]
-    H --> I{"Service Responding?"}
-    I -- Yes --> J["Record Successful Check"]
-    I -- No --> K["Record Downtime / Alert"]
-
-    J --> H
-    K --> H
-
-    classDef source fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
-    classDef deploy fill:#ede9fe,stroke:#7c3aed,color:#4c1d95
-    classDef success fill:#d1fae5,stroke:#059669,color:#064e3b
-    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
-    classDef monitor fill:#fef3c7,stroke:#d97706,color:#78350f
-
-    class A,B source
-    class C,D,E deploy
-    class F,J success
-    class G,K error
-    class H,I monitor
+```bash
+cd codebase && ./mvnw verify
 ```
 
-### Continuous Deployment
-
-Render is configured to deploy automatically when new commits reach the connected GitHub branch.
-
-Typical workflow:
-
-1. Make changes locally or directly on GitHub.
-2. Commit and push the changes to the configured branch.
-3. Render detects the commit and starts a deployment.
-4. Verify that the deployment succeeds and the service becomes live.
-
-GitHub Actions can be used for automated testing and build checks where configured; Render handles the application's deployment in the current hosting setup.
-
-### UptimeRobot
-
-UptimeRobot periodically checks the deployed website to monitor availability.
-
-On Render's free tier, periodic requests can help prevent inactivity-related spin-downs, reducing cold-start delays. However, monitoring does not guarantee uninterrupted uptime, and the application may still experience downtime or deployment interruptions.
+CI runs the same command on every push.
 
 ## Configuration
 
-Configure sensitive settings through environment variables or the hosting platform's environment configuration.
+| Variable | Purpose |
+|---|---|
+| `DB_URL`, `DB_USERNAME`, `DB_PASSWORD` | PostgreSQL (`jdbc:postgresql://host:5432/db`) |
+| `REDIS_URL` | `redis://…` or `rediss://…` for TLS |
+| `JWT_SECRET` | **Required.** A random string of 32+ characters. The app refuses to start without it. |
+| `FAIL_POLICY` | `open` (default) or `closed`: what to do when Redis is unreachable |
+| `CLIENT_IP_HEADER` | Set to `CF-Connecting-IP` only when running behind Cloudflare |
 
-Typical configuration categories include:
+## Design decisions
 
-```env
-# Database
-DATABASE_URL=
-DATABASE_USERNAME=
-DATABASE_PASSWORD=
+- **Stateless gateway.** All limiter state lives in Redis, so you can add or remove instances freely.
+- **Fail-open by default.** A Redis outage shouldn't take every protected API offline. Set `FAIL_POLICY=closed` where protection matters more than availability. It's an environment setting, not a dashboard toggle, because it affects every API on the gateway.
+- **Route cache (30 s).** Avoids a database lookup on every proxied request. Dashboard edits evict the cache immediately on that instance.
+- **Owner isolation.** Every management and dashboard endpoint only returns the caller's own APIs. Other users' APIs return 404, not 403, so their IDs aren't revealed.
+- **Database-side aggregation.** The dashboard gets counts and percentiles from SQL, never raw log rows.
 
-# Redis
-REDIS_HOST=
-REDIS_PORT=
-REDIS_PASSWORD=
-
-# Authentication
-JWT_SECRET=
-
-# Gateway
-GATEWAY_BASE_URL=
-```
-
-The exact variable names depend on the application's configuration.
-
-**Never commit passwords, JWT secrets, database credentials, or other sensitive values to the repository.**
-
-## Testing and Evaluation
-
-The project focuses on validating correctness, reliability, and performance.
-
-Testing includes:
-
-- Unit tests for backend components
-- Redis-backed rate-limit tests
-- Concurrent request validation
-- Multi-instance enforcement tests
-- Redis failure handling
-- API testing using Postman
-- Integration testing using Testcontainers
-
-### Performance Targets
-
-| Metric | Target |
-|---|---:|
-| Rate-limit enforcement accuracy | ±2% |
-| p95 added latency | ≤50 ms |
-| Request log completeness | ≥99.9% |
-| Gateway availability target | ≥99% |
-
-These are project targets, not guarantees of current production performance. Actual results depend on workload, infrastructure, network conditions, and deployment configuration.
-
-## Project Structure
-
-The repository currently organizes the project into a codebase, journals, proposal documents, and GitHub configuration.
+## Project structure
 
 ```text
-API-Gateway-Project/
-├── .github/
-│   └── workflows/
-├── Journals/
-├── Project Proposal/
-├── codebase/
-│   ├── src/
-│   │   ├── main/
-│   │   │   ├── java/
-│   │   │   └── resources/
-│   │   │       └── static/
-│   │   └── test/
-│   ├── Dockerfile
-│   ├── pom.xml
-│   └── README.md
-└── README.md
+codebase/
+├── src/main/java/com/gateway/api_gateway/
+│   ├── gateway/      GatewayController, RateLimiter, RouteCache
+│   ├── controller/   auth, API registration, dashboard, system endpoints
+│   ├── service/      registration, auth, async logging, SSRF validation
+│   ├── security/     JWT filter and utilities
+│   ├── entity/ repository/ dto/ config/
+├── src/main/resources/static/index.html    dashboard (single page, no build step)
+├── src/test/         Testcontainers integration tests
+├── Dockerfile, docker-compose.yml
+Project Proposal/  Project Report/  Journals/   course documents
 ```
 
-The exact source folders and configuration files may evolve as the implementation progresses.
+## Known limitations
 
-## Security Considerations
-
-The gateway's security-related design includes:
-
-- JWT-based user authentication
-- Registered API configuration
-- Controlled target API routing
-- Secure handling of application credentials
-- Explicit Redis failure behavior
-- Configurable trusted-proxy client IP extraction
-- Separation of API configuration from rate-limit enforcement
-
-These controls help reduce misuse of the gateway as an unrestricted proxy. Production deployments should also validate target URLs, restrict access to internal network addresses where appropriate, and configure trusted proxies correctly.
-
-## Future Improvements
-
-Potential future enhancements include:
-
-- Expanded rate-limit algorithm comparisons
-- More extensive concurrent load testing
-- Improved operational metrics and alerting
-- Additional dashboard analytics
-- More detailed latency and throughput benchmarks
-- Stronger production-grade resilience and security controls
+- Budgets are per client IP. Per-API-key budgets aren't supported yet.
+- Log writes are fire-and-forget (`@Async`), so a crash can lose the last few rows.
+- The DNS check runs at registration and route reload, not at the moment of each connection.
 
 ## Team
 
-This project was developed as part of the **UCS503P Project** at Thapar Institute of Engineering and Technology.
+Built as a team project for **UCS503P** at Thapar Institute of Engineering and Technology.
 
-| Team Member | Student ID |
+| Name | Roll no. |
 |---|---|
 | Sarthak Jagota | 1024030753 |
 | Palak Mahajan | 1024030755 |
 | Aayush Kumar Singh | 1024030758 |
 | Dushyant Choudhary | 1024030737 |
 
-## Project Proposal
+## License
 
-This implementation is based on the project proposal **“API Gateway: A Self-Service Rate-Limiting Layer for Web APIs”**, submitted for UCS503P on August 8, 2026.
-
-## Project Goal
-
-> Build a lightweight, deployable API protection layer that enables developers to enforce fair request budgets in front of existing APIs without modifying the APIs themselves.
-
-The primary engineering focus is correct distributed rate limiting, measurable performance, backend integration, and reliable API protection.
+[MIT](LICENSE)

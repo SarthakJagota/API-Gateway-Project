@@ -39,6 +39,4 @@ public class DashboardDtos {
         long p95,
         double throughput   // requests per second over the last minute
     ) {}
-
-    public record SettingsRequest(String failPolicy) {}
 }

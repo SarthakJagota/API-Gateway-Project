@@ -17,13 +17,13 @@ Or run the app yourself (faster while coding):
 
 ```bash
 docker compose up -d postgres redis
-./mvnw spring-boot:run        # Windows: .\mvnw.cmd spring-boot:run
+./mvnw spring-boot:run -Dspring-boot.run.profiles=local   # Windows: .\mvnw.cmd ...
 ```
 
 Open http://localhost:8080, create an account, register an API, then call it:
 
 ```bash
-curl http://localhost:8080/g/<id>/any/path -H "X-API-Key: <key>"
+curl http://localhost:8080/g/<short-name>/any/path -H "X-API-Key: <key>"
 # over the limit -> HTTP 429 + Retry-After
 ```
 
@@ -52,8 +52,9 @@ Deploy with the `Dockerfile` and set these environment variables:
 | `DB_URL` | `jdbc:postgresql://host:5432/dbname` (note the `jdbc:` prefix) |
 | `DB_USERNAME`, `DB_PASSWORD` | from the managed Postgres |
 | `REDIS_URL` | `redis://default:pass@host:6379` (or `rediss://` for TLS) |
-| `JWT_SECRET` | any random string, 32+ characters |
+| `JWT_SECRET` | **required** – random string, 32+ characters (the app won't start without it) |
 | `FAIL_POLICY` | `open` (default) or `closed` |
+| `CLIENT_IP_HEADER` | `CF-Connecting-IP` when behind Cloudflare (Render); leave unset otherwise |
 
 The dashboard is served by the same app, so no separate frontend deploy is
 needed. To host `index.html` elsewhere (e.g. Vercel), set `CFG.BASE` at the top
@@ -71,12 +72,12 @@ writes the log row asynchronously.
   updated in one Lua script (atomic across instances, uses Redis's clock).
 - **Redis down** – `open` lets traffic through, `closed` rejects it. After a
   failure Redis is skipped for 5 s so requests don't each wait on a timeout.
-- **Client identity** – client IP (taken from `X-Forwarded-For` only when the
-  request comes through an internal proxy).
+- **Client identity** – client IP. Behind Cloudflare, set `CLIENT_IP_HEADER=CF-Connecting-IP`
+  so the real client IP is used instead of the edge server's.
 
 ## Known limits (worth stating in the report)
 
-- The fail policy set on the System page is held in memory per instance; set
-  `FAIL_POLICY` for a permanent value.
+- The fail policy is set only by `FAIL_POLICY` (the System page shows it read-only),
+  because it applies to every API on the gateway.
 - Log writes are fire-and-forget (`@Async`), so a crash can lose the last few rows.
 - The Test lab fires requests from one browser, so it measures one client.

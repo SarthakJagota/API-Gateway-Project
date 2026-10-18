@@ -1,7 +1,6 @@
 package com.gateway.api_gateway.controller;
 
 import com.gateway.api_gateway.dto.DashboardDtos.HealthResponse;
-import com.gateway.api_gateway.dto.DashboardDtos.SettingsRequest;
 import com.gateway.api_gateway.entity.RegisteredApi;
 import com.gateway.api_gateway.gateway.RateLimiter;
 import com.gateway.api_gateway.repository.RequestLogRepository;
@@ -12,9 +11,10 @@ import org.springframework.web.bind.annotation.*;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
-import java.util.Map;
 
 // System page: Redis health, fail policy, added latency and throughput.
+// Read-only: the fail policy affects every API on the gateway, so it is set
+// by the operator (FAIL_POLICY env var), not by any logged-in user.
 @RestController
 @RequestMapping("/api/system")
 public class SystemController {
@@ -44,11 +44,5 @@ public class SystemController {
         }
         return new HealthResponse(rateLimiter.isRedisUp() ? "UP" : "DOWN",
                 rateLimiter.getFailPolicy(), p50, p95, Math.round(throughput * 10) / 10.0);
-    }
-
-    @PutMapping("/settings")
-    public Map<String, String> settings(@RequestBody SettingsRequest request) {
-        rateLimiter.setFailPolicy(request.failPolicy());
-        return Map.of("failPolicy", rateLimiter.getFailPolicy());
     }
 }

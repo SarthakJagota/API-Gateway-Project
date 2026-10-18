@@ -155,8 +155,7 @@ return`<div class="two"><div><b>Token bucket</b>${bar(sim(true),'#F25C1F')}<smal
 
 async function system(){const h=await req('/api/system/health');
 shell('system',`<h1>System</h1>${h.redis!=='UP'?'<div class="banner">Redis is unreachable. Enforcement is degraded.</div>':''}<div class="stats">${[['Redis',h.redis],['Fail policy',h.failPolicy],['p50 added latency',h.p50+' ms'],['p95 added latency',h.p95+' ms'],['Throughput (last min)',h.throughput+' req/s']].map(([l,v])=>`<div><b>${v}</b><span>${l}</span></div>`).join('')}</div>
-<div class="panel"><h3>When Redis is unreachable</h3><p style="color:var(--mute);max-width:600px">Fail open keeps your API available but unlimited. Fail closed keeps the limit but rejects traffic.</p><select id="fp" style="max-width:260px"><option value="open">Fail open</option><option value="closed">Fail closed</option></select> <button class="btn pri sm" id="sv">Save</button></div>`);
-$('#fp').value=h.failPolicy;$('#sv').onclick=async()=>{await req('/api/system/settings',{method:'PUT',body:{failPolicy:$('#fp').value}});toast('Failure policy saved');system()}}
+<div class="panel"><h3>When Redis is unreachable</h3><p style="color:var(--mute);max-width:600px">Fail open keeps your API available but unlimited. Fail closed keeps the limit but rejects traffic.</p><p>This gateway is set to <b>fail ${esc(h.failPolicy)}</b>. The operator sets it with the <code>FAIL_POLICY</code> environment variable, because it applies to every API on the gateway.</p></div>`)}
 
 const observe=()=>{const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}}),{threshold:.15});document.querySelectorAll('.rv,.col').forEach(el=>io.observe(el))};
 function render(){const R=route,priv=['overview','apis','logs','lab','system'];
